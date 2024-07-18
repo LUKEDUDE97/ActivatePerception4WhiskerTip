@@ -40,10 +40,9 @@ def refineOrientation(r):
 contacted = 0  # Default contact flag
 duration = 180  # Total excutating time duration (seconds)
 servoing_ratio = 5  # Calculate and sent out the controls every N iterations
-stable_distance = 20 # At least N measurements to provide necessary information for filter & BSpline
 
 # Filtering parameters
-filter_window = 5  # Update measurement noise empirically
+filter_window = 10  # Update measurement noise empirically
 scaling_factor_Q = 0.01  # Scaling factor on process noise
 initial_state = [-0.015, 0.098] # !!! DYX !!! : To be defined, the fixed coordinate under our optimal deflection state
 initial_variance = 10.0  # prior estimate variance P
@@ -51,9 +50,14 @@ tip_pos_s_deq = deque(maxlen=filter_window) # Maintain a fifo queue for unfilter
 tip_pos_w_filtered_que = []  # Final estimates of tip contacts under world-fixed frame
 
 # Rotation - BSpline orientation parameters
+theta_last_measured = 0.5 * np.pi
+theta_next_desired = 0.5 * np.pi  # Default rotation ctrl while initializing
+keypoint_interval = 5
+keypoint_length = 5
+u_next = 1 + 1 / (keypoint_length - 1)
+keypoints_deq = deque(maxlen=keypoint_length)
 n_interior_knots = 5
 spline_degree = 3
-theta_last_measured = 0
 
 # Translation - PI Controller parameters
 X_VEL = 0.01
@@ -100,7 +104,9 @@ if __name__ == "__main__":
         deflection_moment = data.sensor("base2whisker_z").data.copy()
 
         # Franka Robot Node : Access the robot (ee) state
-        ee_state = np.array([0, 0, 0]) # Initial state of end-effector in 2D plane under world frame : [base_X, base_Y, theta]
+        ee_state = np.array(
+            [0, 0, 0]
+        )  # Initial state of end-effector in 2D plane under world frame : [base_X, base_Y, theta]
         ee_state[0] = data.sensor("whisker_joint_x").data.copy()
         ee_state[1] = data.sensor("whisker_joint_y").data.copy()
         ee_state[2] = data.sensor("whisker_joint_z").data.copy()
@@ -115,61 +121,71 @@ if __name__ == "__main__":
             tip_Y_s = deflection2fy(deflection_moment)
             tip_pos_s_deq.append([tip_X_s, tip_Y_s])
             # Filter the tip position estimates
-            if touch_index < stable_distance:
+            if len(tip_pos_s_deq) == filter_window:
+                update_noise_matrices(kf, tip_pos_s_deq)
+                kf.predict(
+                )  # !!! DYX !!! : better to transform state transition (static assumption) into world frame
+                kf.update(tip_pos_s_deq[-1])
+                tip_pos_s_filtered = kf.x.copy()
+                # Transform the tip point into world-fixed frame
                 tip_pos_w_filtered = np.dot(
                     np.array([
-                        [np.cos(ee_state[2]), -
-                         np.sin(ee_state[2]), ee_state[0]],
-                        [np.sin(ee_state[2]), np.cos(
-                            ee_state[2]), ee_state[1]],
+                        [
+                            np.cos(ee_state[2]), -np.sin(ee_state[2]),
+                            ee_state[0]
+                        ],
+                        [
+                            np.sin(ee_state[2]),
+                            np.cos(ee_state[2]), ee_state[1]
+                        ],
+                        [0, 0, 1],
+                    ]),
+                    np.array([[tip_pos_s_filtered[0]], [tip_pos_s_filtered[1]],
+                              [1]]),
+                )
+                tip_pos_w_filtered_que.append(
+                    [tip_pos_w_filtered[0], tip_pos_w_filtered[1]])
+            else:
+                tip_pos_w_filtered = np.dot(
+                    np.array([
+                        [
+                            np.cos(ee_state[2]), -np.sin(ee_state[2]),
+                            ee_state[0]
+                        ],
+                        [
+                            np.sin(ee_state[2]),
+                            np.cos(ee_state[2]), ee_state[1]
+                        ],
                         [0, 0, 1],
                     ]),
                     np.array([[tip_X_s], [tip_Y_s], [1]]),
                 )
                 tip_pos_w_filtered_que.append(
                     [tip_pos_w_filtered[0], tip_pos_w_filtered[1]])
-            else:
-                update_noise_matrices(kf, tip_pos_s_deq) 
-                kf.predict() # !!! DYX !!! : better to transform state transition (static assumption) into world frame
-                kf.update(tip_pos_s_deq[-1])
-                tip_pos_s_filtered = kf.x.copy()
-                # Transform the tip point into world-fixed frame
-                tip_pos_w_filtered = np.dot(
-                    np.array([
-                        [np.cos(ee_state[2]), -
-                         np.sin(ee_state[2]), ee_state[0]],
-                        [np.sin(ee_state[2]), np.cos(
-                            ee_state[2]), ee_state[1]],
-                        [0, 0, 1],
-                    ]),
-                    np.array([[tip_pos_s_filtered[0]], [
-                             tip_pos_s_filtered[1]], [1]]),
-                )
-                tip_pos_w_filtered_que.append(
-                    [tip_pos_w_filtered[0], tip_pos_w_filtered[1]])
 
             # Rotary direction measurement in next iteration
-            if touch_index < stable_distance:
-                theta_next_measured = np.pi/2
-                theta_next_desired = theta_next_measured
-            else:
-                # Predict next contact point on BSpline curve
-                qs = np.linspace(0, 1, n_interior_knots + 2)[1:-1]
-                knots = np.quantile(tip_pos_w_filtered_que[:][0], qs) # !!! DYX !!! : unselected keypoints here
-                tck, u = interpolate.splprep(
-                    tip_pos_w_filtered_que[:][0],
-                    tip_pos_w_filtered_que[:][1],
-                    t=knots,
-                    k=spline_degree,
-                )
-                tip_pos_w_next = interpolate.splev(1.05, tck) # !!! DYX !!! : 1.05 depends on the number of selected keypoints
-                # Transform slope into angular measurement
-                theta_next_measured = np.arctan2(
-                    tip_pos_w_next[1] - tip_pos_w_filtered_que[-1][1],
-                    tip_pos_w_next[0] - tip_pos_w_filtered_que[-1][0])
-                # Refine the measurement as accpetable desired rotary ctrl
-                theta_next_desired = refineOrientation(theta_next_measured)
-                theta_last_measured = theta_next_measured
+            if touch_index % keypoint_interval == 0:
+                keypoints_deq.append(tip_pos_w_filtered_que[-1])
+
+                # Only if we have collected enough keypoints and it is a keypoint currently
+                if len(keypoints_deq) == keypoint_length:
+                    # Predict next contact point on BSpline curve
+                    qs = np.linspace(0, 1, n_interior_knots + 2)[1:-1]
+                    knots = np.quantile(keypoints_deq[:][0], qs)
+                    tck, u = interpolate.splprep(
+                        keypoints_deq[:][0],
+                        keypoints_deq[:][1],
+                        t=knots,
+                        k=spline_degree,
+                    )
+                    tip_pos_w_next = interpolate.splev(u_next, tck)
+                    # Transform slope into angular measurement
+                    theta_next_measured = np.arctan2(
+                        tip_pos_w_next[1] - keypoints_deq[-1][1],
+                        tip_pos_w_next[0] - keypoints_deq[-1][0])
+                    # Refine the measurement as accpetable desired rotary ctrl
+                    theta_next_desired = refineOrientation(theta_next_measured)
+                    theta_last_measured = theta_next_measured
 
             # Linear velocity magnitude in next iteration
             def2Target_error = deflection_moment - DEF_TARGET
@@ -177,11 +193,12 @@ if __name__ == "__main__":
             PI_scale = GAIN_P * def2Target_error + GAIN_I * def2Target_integral
             PI_scale = max(min(PI_scale, PI_scale_bound), -PI_scale_bound)
             xvel_s_next_desired = PI_scale * X_VEL
-            yvel_s_next_desired = np.sqrt(
-                TOTAL_VEL**2 - xvel_s_next_desired**2)
+            yvel_s_next_desired = np.sqrt(TOTAL_VEL**2 -
+                                          xvel_s_next_desired**2)
 
             # Transform into world-fixed frame
-            theta_w_next_desired = theta_next_desired - 0.5 * np.pi # !!! DYX !!! : transform angular degree into rotary matrix
+            # !!! DYX !!! : transform angular degree into rotary matrix
+            theta_w_next_desired = theta_next_desired - 0.5 * np.pi
             xvel_w_next_desired = xvel_s_next_desired * \
                 np.cos(theta_w_next_desired) - yvel_s_next_desired * \
                 np.sin(theta_w_next_desired)
