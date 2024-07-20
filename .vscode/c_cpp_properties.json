@@ -4,7 +4,9 @@
             "name": "Linux",
             "includePath": [
                 "${workspaceFolder}/**",
-                "/opt/ros/noetic/include"
+                "/opt/ros/noetic/include",
+                "~/catkin_ws/devel/include",
+                "~/project/whisker_calibrationstage_ws/devel/include",
             ],
             "defines": [],
             "compilerPath": "/usr/bin/gcc",
