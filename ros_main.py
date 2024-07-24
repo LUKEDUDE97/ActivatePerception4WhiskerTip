@@ -10,8 +10,9 @@ from whisker_customed_msg.msg import MagneticFieldVector, EESensorState, FrankaC
 from collections import deque
 from filterpy.kalman import KalmanFilter
 
+
 # Filtering parameters
-initial_state = [-0.015, 0.098] # !!! DYX !!! : To be defined, the fixed coordinate under our optimal deflection state
+initial_state = [-0.058, 0.087] # !!! DYX !!! : To be defined, the fixed coordinate under our optimal deflection state
 initial_variance = 10.0  
 filter_window = 10 
 scaling_factor_Q = 0.01 
@@ -19,24 +20,29 @@ tip_pos_s_deq = deque(maxlen=filter_window)
 tip_pos_w_filtered_que = [] 
 
 # Excuting parameters
-collision_threshold = 1e-4 # !!! DYX !!! : To be defined, detect the collision when pass this value
+collision_threshold = 6000 # !!! DYX !!! : To be defined, detect the collision when pass this value
 contacted = 0
 touch_index = 0
+stable_distance = 60
 
 # Rotation decision parameters
-keypoint_interval = 5
-keypoint_length = 5
+keypoint_interval = 3
+keypoint_length = 10
 keypoints_deq = deque(maxlen=keypoint_length)
 n_interior_knots = 5
 spline_degree = 3
 u_next = 1 + 1 / (keypoint_length - 1)
 theta_last_measured = 0.5 * np.pi
+theta_last_desired = 0.5 * np.pi
 theta_next_desired = 0.5 * np.pi
+tan_count = 0
+rot_limit_scale = 1
+initial_slope = 0 # !!! DYX !!! : To be defiend
 
 # Translation decision parameters
-DEF_TARGET = -2.8e-4 # !!! DYX !!! : To be defined, correspond to the optimal cotact distance XX mm
+DEF_TARGET = 7600 # !!! DYX !!! : To be defined, correspond to the optimal cotact distance XX mm
 KP = 500000
-KI = 1000
+KI = 1000   
 KD = 0
 PID_scale_bound = 20  # !!! DYX !!! : To be defined, PID_scale_bound * X_VEL = TOTAL_VEL
 X_VEL = 0.01
@@ -109,15 +115,15 @@ controller = PIDController(KP, KI, KD, DEF_TARGET)
 
 # Calculate tip position via acquired measuremnt based on a characterized model : Y
 def deflection2fy(an):
-    fY = (-1.389e19 * an**5 - 1.317e16 * an**4 - 4.362e12 * an**3 -
-          6.456e08 * an**2 - 2.075e05 * an - 2.149)
+    fY = (-1.637e-17 * an**5 + 3.271e-13 * an**4 - 1.127e-09 * an**3 -
+         1.587e-05 * an**2 + 0.1498 * an - 366.6)
     return -fY / 1000
 
 
 # Calculate tip position via acquired measuremnt based on a characterized model : X
 def deflection2fx(an):
-    fX = (-1.41e18 * an**5 - 8.617e14 * an**4 - 9.859e10 * an**3 +
-          2.063e08 * an**2 + 5192 * an - 0.1542)
+    fX = (-6.332e-17 * an**5 + 1.362e-12 * an**4 - 5.152e-09 * an**3 - 
+          6.971e-05 * an**2 + 0.6287 * an - 1419)
     return (100 - fX) / 1000
 
 
@@ -131,10 +137,38 @@ def update_noise_matrices(measurements):
 
 # Prevent the rotaion from exterme disturbance and refine the orientation
 def refineOrientation(r):
-    return
+    global wrap_count
+    #  Use last original measurement (-pi, pi) to detect a full turn
+    if r - theta_last_measured > 1.888 * np.pi:
+        wrap_count += 1
+    elif r - theta_last_measured < -1.888 * np.pi:
+        wrap_count -= 1
+    r_refined = r - wrap_count * 2 * np.pi
+
+    # rotary speed limitation
+    if touch_index >= stable_distance:
+        # Multiply a servoing ratio to regulat our limit, lower ratio means larger direction change between every decision
+        rot_speed_limit = 0.00025 * rot_limit_scale * keypoint_interval
+        # Use last desired of accumulated rotation to limit speed
+        theta_err = r_refined - theta_last_desired
+        if (theta_err > rot_speed_limit and theta_err < 0.5 * np.pi) or \
+            (theta_err < - 1.5*np.pi and theta_err > - 2*np.pi + rot_speed_limit) or \
+            (theta_err <= -0.5*np.pi and theta_err >= -np.pi) or \
+                (theta_err >= np.pi and theta_err <= 1.5*np.pi):
+            r_refined = theta_last_desired + rot_speed_limit
+        elif (theta_err < -rot_speed_limit and theta_err > -0.5 * np.pi) or \
+            (theta_err > 1.5*np.pi and theta_err < 2*np.pi - rot_speed_limit) or \
+            (theta_err >= 0.5*np.pi and theta_err <= np.pi) or \
+                (theta_err <= - np.pi and theta_err >= - 1.5*np.pi):
+            r_refined = theta_last_desired - rot_speed_limit
+
+    # r : (-pi, pi); r_refined : no upper bound accumlated rotation
+    return r_refined
 
 
 def callback(sensor_msg, frankaEE_msg):
+    # !!! DYX !!! : transform the quanterian into radian
+    
     # Give access of the synchronized states (Serial Node & Franka Robot Node) to local object
     state.current_time = rospy.Time.now()
     state.deflection_moment = sensor_msg.magnetic_y
@@ -158,10 +192,10 @@ def callback(sensor_msg, frankaEE_msg):
     # Collision detection
     if np.abs(state.deflection_moment) > collision_threshold:
         contacted = 1
-        touch_index += 1
         
     # Calculate the contact and next ctrl here
     if contacted:  
+        touch_index += 1
         # Produce direct estimate of tip position
         tip_X_s = deflection2fx(state.deflection_moment)
         tip_Y_s = deflection2fy(state.deflection_moment)
@@ -189,7 +223,7 @@ def callback(sensor_msg, frankaEE_msg):
                           [1]]),
             )
             tip_pos_w_filtered_que.append(
-                [tip_pos_w_filtered[0], tip_pos_w_filtered[1]])
+                [tip_pos_w_filtered[0][0], tip_pos_w_filtered[1][0]])
         else:
             tip_pos_w_filtered = np.dot(
                 np.array([
@@ -206,7 +240,7 @@ def callback(sensor_msg, frankaEE_msg):
                 np.array([[tip_X_s], [tip_Y_s], [1]]),
             )
             tip_pos_w_filtered_que.append(
-                [tip_pos_w_filtered[0], tip_pos_w_filtered[1]])
+                [tip_pos_w_filtered[0][0], tip_pos_w_filtered[1][0]])
 
         # Rotary direction decision for next iteration
         if touch_index % keypoint_interval == 0:
@@ -216,21 +250,25 @@ def callback(sensor_msg, frankaEE_msg):
             if len(keypoints_deq) == keypoint_length:
                 # Predict next contact position along BSpline curve
                 qs = np.linspace(0, 1, n_interior_knots + 2)[1:-1]
-                knots = np.quantile(keypoints_deq[:][0], qs)
+                knots = np.quantile(np.array(keypoints_deq)[:,1], qs)
                 tck, u = interpolate.splprep(
-                    keypoints_deq[:][0],
-                    keypoints_deq[:][1],
+                    [np.array(keypoints_deq)[:,0],
+                    np.array(keypoints_deq)[:,1]],
                     t=knots,
                     k=spline_degree,
                 )
                 tip_pos_w_next = interpolate.splev(u_next, tck)
                 # Transform a slope to next into angular measurement
                 theta_next_measured = np.arctan2(
-                    tip_pos_w_next[1] - keypoints_deq[-1][1],
-                    tip_pos_w_next[0] - keypoints_deq[-1][0])
+                    tip_pos_w_next[1] - np.array(keypoints_deq)[-1][1],
+                    tip_pos_w_next[0] - np.array(keypoints_deq)[-1][0])
                 # Refine the measurement as acceptable desired rotary ctrl
                 theta_next_desired = refineOrientation(theta_next_measured)
+                theta_last_desired = theta_next_desired
                 theta_last_measured = theta_next_measured
+            else:
+                theta_next_measured = np.pi/2
+                theta_next_desired = theta_next_measured
 
         # Linear translation decision for next iteration
         PID_scale = controller.update(state.deflection_moment)
@@ -240,7 +278,8 @@ def callback(sensor_msg, frankaEE_msg):
 
         # Transform all the ctrls into world-fixed frame and usable format
         # !!! DYX !!! : adapt to the franka frame first and rotation expression
-        theta_w_next_desired = theta_next_desired - 0.5 * np.pi
+        # !!! DYX !!! : it is not the theta_w_next_desired here, rename it
+        theta_w_next_desired = theta_next_desired - initial_slope
         xvel_w_next_desired = xvel_s_next_desired * \
             np.cos(theta_w_next_desired) - yvel_s_next_desired * \
             np.sin(theta_w_next_desired)
@@ -249,11 +288,12 @@ def callback(sensor_msg, frankaEE_msg):
             np.cos(theta_w_next_desired)
 
         # Publish and transport the ctrl commands
-        ctrl_msg = FrankaCtrl()
-        ctrl_msg.xvel = xvel_w_next_desired
-        ctrl_msg.yvel = yvel_w_next_desired
-        ctrl_msg.orientation = theta_w_next_desired
-        ctrl_pub.publish(ctrl_msg)
+        if touch_index >= stable_distance:
+            ctrl_msg = FrankaCtrl()
+            ctrl_msg.xvel = xvel_w_next_desired
+            ctrl_msg.yvel = yvel_w_next_desired
+            ctrl_msg.orientation = theta_w_next_desired
+            ctrl_pub.publish(ctrl_msg)
 
 
 def main():
@@ -264,7 +304,8 @@ def main():
     rospy.wait_for_message('/FrankaEE_state', PoseStamped)
 
     global state_pub  # State publisher
-    state_pub = rospy.Publisher('/EE_Sensor_state', EESensorState, queue_size=10)
+    state_pub = rospy.Publisher(
+        '/EE_Sensor_state', EESensorState, queue_size=10)
     global ctrl_pub  # Ctrl publisher
     ctrl_pub = rospy.Publisher('/Franka_Ctrl', FrankaCtrl, queue_size=10)
 
