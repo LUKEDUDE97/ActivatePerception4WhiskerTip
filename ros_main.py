@@ -264,8 +264,7 @@ def main():
     rospy.wait_for_message('/FrankaEE_state', PoseStamped)
 
     global state_pub  # State publisher
-    state_pub = rospy.Publisher(
-        '/EE_Sensor_state', EESensorState, queue_size=10)
+    state_pub = rospy.Publisher('/EE_Sensor_state', EESensorState, queue_size=10)
     global ctrl_pub  # Ctrl publisher
     ctrl_pub = rospy.Publisher('/Franka_Ctrl', FrankaCtrl, queue_size=10)
 
