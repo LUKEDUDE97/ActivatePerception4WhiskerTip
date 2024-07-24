@@ -37,16 +37,16 @@ theta_last_desired = 0.5 * np.pi
 theta_next_desired = 0.5 * np.pi
 tan_count = 0
 rot_limit_scale = 1
-initial_slope = 0 # !!! DYX !!! : To be defiend
+initial_slope = 0.5 * np.pi # !!! DYX !!! : To be defiend
 
 # Translation decision parameters
 DEF_TARGET = 7600 # !!! DYX !!! : To be defined, correspond to the optimal cotact distance XX mm
 KP = 500000
 KI = 1000   
 KD = 0
-PID_scale_bound = 20  # !!! DYX !!! : To be defined, PID_scale_bound * X_VEL = TOTAL_VEL
 X_VEL = 0.01
 TOTAL_VEL = 0.2
+PID_scale_bound = TOTAL_VEL / X_VEL  
 
 
 class EESensorStateData:
@@ -277,9 +277,16 @@ def callback(sensor_msg, frankaEE_msg):
         yvel_s_next_desired = np.sqrt(TOTAL_VEL**2 - xvel_s_next_desired**2)
 
         # Transform all the ctrls into world-fixed frame and usable format
-        # !!! DYX !!! : adapt to the franka frame first and rotation expression
-        # !!! DYX !!! : it is not the theta_w_next_desired here, rename it
         theta_w_next_desired = theta_next_desired - initial_slope
+        # !!!
+        # When data.ctrl[2] = 0 in a start forward motion initial_slope = 0.5 * np.pi, the whisker base
+        # frame has no rotation on the world-fixed frame. theta_next_desired is a value with no upper bound
+        # accumulated via the theta_next_measured which produced from arctan2 increase periodically ranging
+        # from (-pi, pi). Subtracted by a initial_slope will make the theta compatable with the actual rotary
+        # change from sensor from to world frame, that is the rotation around the Z-axis of world coordinates.
+        # So, all in all, it cames to a conclusion that theta_w_next_desired could be directly used as an
+        # absolute target rotation radians on world-fixed frame ???
+        # !!!
         xvel_w_next_desired = xvel_s_next_desired * \
             np.cos(theta_w_next_desired) - yvel_s_next_desired * \
             np.sin(theta_w_next_desired)
@@ -294,6 +301,10 @@ def callback(sensor_msg, frankaEE_msg):
             ctrl_msg.yvel = yvel_w_next_desired
             ctrl_msg.orientation = theta_w_next_desired
             ctrl_pub.publish(ctrl_msg)
+            
+        rospy.loginfo("Contacted! Touch index: %f, xvel: %f, yvel: %f, new direction: %f",
+                touch_index, xvel_w_next_desired,
+                yvel_w_next_desired, theta_w_next_desired)
 
 
 def main():

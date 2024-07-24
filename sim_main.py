@@ -234,7 +234,6 @@ if __name__ == "__main__":
                 TOTAL_VEL**2 - xvel_s_next_desired**2)
 
             # Transform into world-fixed frame
-            # !!! DYX !!! : transform angular degree into rotary matrix
             theta_w_next_desired = theta_next_desired - initial_slope
             xvel_w_next_desired = xvel_s_next_desired * \
                 np.cos(theta_w_next_desired) - yvel_s_next_desired * \
