@@ -1,45 +1,24 @@
 #include <cmath>
 #include <iostream>
-#include <mutex>
+#include <ros/ros.h>
 #include <franka/exception.h>
 #include <franka/robot.h>
 #include "examples_common.h"
-#include <ros/ros.h>
-#include <whisker_customed_msg/FrankaCtrl.h>
-
-#define TOTAL_VEL 0.02 // !DYX! : need to coincide with the setting in master node
-
-struct ControlCommands {
-  double x_velocity = 0.0;
-  double y_velocity = TOTAL_VEL;
-  double rotation = 0.0; // !DYX! : turned into absolute target in radians
-  std::mutex mtx;
-}; // !DYX! : we could test the initial motion first before officially start transporting ctrl_cmds
-
-ControlCommands control_commands;
-std::array<double, 16> initial_pose;
-
-void controlCommandCallback(const whisker_customed_msg::FrankaCtrl::ConstPtr& msg) {
-  std::lock_guard<std::mutex> lock(control_commands.mtx);
-  control_commands.x_velocity = msg->xvel;
-  control_commands.y_velocity = msg->yvel;
-  control_commands.rotation = msg->orientation; // !DYX! : need to transform into angular velocity on Z-axis
-}
 
 int main(int argc, char** argv) {
-
-  ros::init(argc, argv, "robot_ctrl");
+  // Initialize the ROS node
+  ros::init(argc, argv, "motion_generator_vel");
   ros::NodeHandle nh;
 
-  if (argc != 2) {
-    ROS_ERROR("Usage: %s <robot-hostname>", argv[0]);
+  // Get the robot hostname from the ROS parameter server
+  std::string robot_hostname;
+  if (!nh.getParam("robot_hostname", robot_hostname)) {
+    ROS_ERROR("Failed to get param 'robot_hostname'");
     return -1;
   }
 
-  ros::Subscriber control_command_sub = nh.subscribe("/Franka_Ctrl", 10, controlCommandCallback);
-
   try {
-    franka::Robot robot(argv[1]);
+    franka::Robot robot(robot_hostname);
     setDefaultBehavior(robot);
 
     // First move the robot to a suitable joint configuration
@@ -51,6 +30,8 @@ int main(int argc, char** argv) {
     robot.control(motion_generator);
     ROS_INFO("Finished moving to initial joint configuration.");
 
+    // Set additional parameters always before the control loop, NEVER in the control loop!
+    // Set the joint impedance.
     robot.setJointImpedance({{3000, 3000, 3000, 2500, 2500, 2000, 2000}});
 
     // Set the collision behavior.
@@ -79,16 +60,11 @@ int main(int argc, char** argv) {
     robot.control([=, &time](const franka::RobotState&,
                              franka::Duration period) -> franka::CartesianVelocities {
       time += period.toSec();
-      if (time == 0.0) {
-        initial_pose = robot_state.O_T_EE_c;
-      }
-
-      // Transport X- ans Y-linear velocity and Z- angular velocity
-      double v_x = control_commands.x_velocity;
-      double v_y = control_commands.y_velocity;
-      double w_z = control.commands.rotation; 
-
-      franka::CartesianVelocities output = {{v_x, v_y, 0.0, 0.0, 0.0, w_z}};
+      double cycle = std::floor(pow(-1.0, (time - std::fmod(time, time_max)) / time_max));
+      double v = cycle * v_max / 2.0 * (1.0 - std::cos(2.0 * M_PI / time_max * time));
+      double v_x = std::cos(angle) * v;
+      double v_z = -std::sin(angle) * v;
+      franka::CartesianVelocities output = {{v_x, 0.0, v_z, 0.0, 0.0, 0.0}};
       if (time >= 2 * time_max) {
         ROS_INFO("Finished motion, shutting down example");
         return franka::MotionFinished(output);
