@@ -5,7 +5,7 @@ import numpy as np
 import scipy.interpolate as interpolate
 
 from message_filters import Subscriber, ApproximateTimeSynchronizer
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, TwistStamped
 from whisker_customed_msg.msg import MagneticFieldVector, EESensorState, FrankaCtrl
 from collections import deque
 from filterpy.kalman import KalmanFilter
@@ -172,10 +172,10 @@ def callback(sensor_msg, frankaEE_msg):
     # Give access of the synchronized states (Serial Node & Franka Robot Node) to local object
     state.current_time = rospy.Time.now()
     state.deflection_moment = sensor_msg.magnetic_y
-    state.xpos_ee = frankaEE_msg.pose.position.x
-    state.ypos_ee = frankaEE_msg.pose.position.y
-    state.zrot_ee = frankaEE_msg.pose.orientation.z
-
+    state.xpos_ee = frankaEE_msg.twist.linear.x
+    state.ypos_ee = frankaEE_msg.twist.linear.y
+    state.zrot_ee = frankaEE_msg.twist.angular.z
+    
     rospy.loginfo("Time: %f, Deflection: %f, Position: (%f, %f), Orientation: %f",
                   state.current_time.to_sec(), state.deflection_moment,
                   state.xpos_ee, state.ypos_ee, state.zrot_ee)
@@ -312,7 +312,7 @@ def main():
 
     # Wait for the first message from both topics
     rospy.wait_for_message('/Sensor_state', MagneticFieldVector)
-    rospy.wait_for_message('/FrankaEE_state', PoseStamped)
+    rospy.wait_for_message('/FrankaEE_state', TwistStamped)
 
     global state_pub  # State publisher
     state_pub = rospy.Publisher(
@@ -322,7 +322,7 @@ def main():
 
     # Subscribe to the /Sensor_state and /FrankaEE_state topics
     sensor_sub = Subscriber('/Sensor_state', MagneticFieldVector)
-    frankaEE_sub = Subscriber('/FrankaEE_state', PoseStamped)
+    frankaEE_sub = Subscriber('/FrankaEE_state', TwistStamped)
 
     # Define the synchronization policy and synchronizer
     ats = ApproximateTimeSynchronizer(
