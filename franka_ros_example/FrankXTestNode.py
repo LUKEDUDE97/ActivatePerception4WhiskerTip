@@ -35,11 +35,10 @@ if __name__ == '__main__':
     robot.move(joint_motion)
 
     # # Move the gripper if you needed and grasp the whisker sensor device
-    # gripper.move(0.05)
     # gripper.clamp()
 
     # # Get in position for starting a contact trajectory
-    # customed_motion = frankx.LinearMotion(Affine(0.466816, -0.009096, 0.183697))
+    # customed_motion = frankx.LinearMotion(Affine(0.328195, -0.314868, 0.286922))
     # robot.move(customed_motion)
 
     # robot.set_dynamic_rel(0.01)

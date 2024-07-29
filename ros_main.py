@@ -110,7 +110,7 @@ ctrl = FrankaRobotCtrl()
 # Bayesian filter initialization
 filter = BayesianFilter()
 # PIDControll initialization
-controller = PIDController(KP, KI, KD, DEF_TARGET)
+# controller = PIDController(KP, KI, KD, DEF_TARGET)
 
 
 # Calculate tip position via acquired measuremnt based on a characterized model : Y
@@ -183,13 +183,14 @@ def callback(sensor_msg, frankaEE_msg):
     # Publish the current robot & sensor state
     # msg = EESensorState()
     # msg.header.stamp = rospy.Time.now()
-    # msg.magnetic_y = sensor_msg.magnetic_y
-    # msg.pose_ee.position.x = frankaEE_msg.pose.position.x
-    # msg.pose_ee.position.y = frankaEE_msg.pose.position.y
-    # msg.pose_ee.orientation.z = frankaEE_msg.pose.orientation.z
-    # pub.publish(msg)
+    # msg.magnetic_y = state.deflection_moment
+    # msg.pose_ee.position.x = frankaEE_msg.twist.linear.x
+    # msg.pose_ee.position.y = frankaEE_msg.twist.linear.y
+    # msg.pose_ee.orientation.z = frankaEE_msg.twist.angular.z
+    # state_pub.publish(msg)
 
     # Collision detection
+    global contacted
     if np.abs(state.deflection_moment) > collision_threshold:
         contacted = 1
         
@@ -309,9 +310,13 @@ def callback(sensor_msg, frankaEE_msg):
 
 def main():
     rospy.init_node('Master_node', anonymous=True)
+    
+    # !DYX! : It needs rospy.get_time to initialize a previous time, therefore it has to be after rospy.init_node()
+    global controller
+    controller = PIDController(KP, KI, KD, DEF_TARGET)  
 
     # Wait for the first message from both topics
-    rospy.wait_for_message('/Sensor_state', MagneticFieldVector)
+    rospy.wait_for_message('/MagneticSensor', MagneticFieldVector)
     rospy.wait_for_message('/FrankaEE_state', TwistStamped)
 
     global state_pub  # State publisher
